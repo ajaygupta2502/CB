@@ -1,63 +1,74 @@
 import streamlit as st
-import fitz  # PyMuPDF
-import docx
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
+import openai
+from PyPDF2 import PdfReader
+from docx import Document
 
-# Load the embedding model
-model = SentenceTransformer('all-MiniLM-L6-v2')
+OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"  # <-- Put your real key here
+openai.api_key = OPENAI_API_KEY
 
-# Extract text from PDF
 def extract_text_from_pdf(file):
-    doc = fitz.open(stream=file.read(), filetype="pdf")
+    pdf_reader = PdfReader(file)
     text = ""
-    for page in doc:
-        text += page.get_text()
+    for page in pdf_reader.pages:
+        text += page.extract_text() or ""
     return text
 
-# Extract text from Word
 def extract_text_from_docx(file):
-    doc = docx.Document(file)
-    return '\n'.join([para.text for para in doc.paragraphs])
+    doc = Document(file)
+    text = ""
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    return text
 
-# Chunk text
-def chunk_text(text, chunk_size=500):
-    words = text.split()
-    return [' '.join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+def extract_text_from_txt(file):
+    return file.read().decode("utf-8")
 
-# Create FAISS index
-def create_faiss_index(chunks):
-    embeddings = model.encode(chunks)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(np.array(embeddings))
-    return index, chunks
+def extract_text(files):
+    full_text = ""
+    for file in files:
+        if file.name.endswith(".pdf"):
+            full_text += extract_text_from_pdf(file)
+        elif file.name.endswith(".docx"):
+            full_text += extract_text_from_docx(file)
+        elif file.name.endswith(".txt"):
+            full_text += extract_text_from_txt(file)
+        else:
+            full_text += "Unsupported file type: " + file.name
+    return full_text
 
-# Streamlit UI
-st.title("📄 Document Semantic Search Chatbot")
-st.write("Upload a PDF or Word document and ask questions about its content.")
+def ask_question(context, question):
+    context = context[:4000]  # Limit for token safety
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant who answers questions based on the context provided."},
+        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+    ]
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        max_tokens=512,
+        temperature=0.2
+    )
+    return response.choices[0].message["content"]
 
-uploaded_file = st.file_uploader("Upload your document", type=["pdf", "docx"])
+st.set_page_config(page_title="Document Chatbot", layout="centered")
+st.title("📄 Chat with Your Documents")
 
-if uploaded_file:
-    if uploaded_file.name.endswith(".pdf"):
-        text = extract_text_from_pdf(uploaded_file)
-    elif uploaded_file.name.endswith(".docx"):
-        text = extract_text_from_docx(uploaded_file)
-    else:
-        st.error("Unsupported file format.")
-        st.stop()
+uploaded_files = st.file_uploader("Upload your documents (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"], accept_multiple_files=True)
 
-    st.success("Document uploaded and text extracted successfully.")
+if uploaded_files:
+    with st.spinner("Processing documents..."):
+        context_text = extract_text(uploaded_files)
+    st.success("Documents processed! You can now ask questions.")
 
-    chunks = chunk_text(text)
-    index, chunk_texts = create_faiss_index(chunks)
+    with st.form("question_form"):
+        question = st.text_input("Ask a question about your documents:")
+        submit = st.form_submit_button("Ask")
+        if submit and question:
+            with st.spinner("Thinking..."):
+                answer = ask_question(context_text, question)
+            st.markdown(f"**Answer:** {answer}")
+else:
+    st.info("Please upload at least one document to begin.")
 
-    query = st.text_input("Enter your question or search query")
-
-    if query:
-        query_embedding = model.encode([query])
-        D, I = index.search(np.array(query_embedding), k=5)
-        st.subheader("🔍 Top Relevant Results")
-        for i in I[0]:
-            st.write(chunk_texts[i])
+st.markdown("---")
+st.markdown("Made with ❤️ using [Streamlit](https://streamlit.io/) and [OpenAI](https://openai.com/)")
